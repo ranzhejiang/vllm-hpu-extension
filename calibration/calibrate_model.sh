@@ -118,7 +118,7 @@ while getopts "m:b:l:t:d:h:o:r:u:e" OPT; do
             RANK="$OPTARG"
             ;;
 	u )
-	    USE_EP="--use_expert_paral"
+	    USE_EP=true
 	    ;;
         e ) 
             ENFORCE_EAGER=true
@@ -201,6 +201,11 @@ else
     SKIP_STEP_1=true
 fi
 
+if $USE_EP; then
+    EXTRA_FLAGS_STEP_2+="--expert-parallel "
+    EXTRA_FLAGS_STEP_4+="--expert-parallel "
+    EP_FLAG_STEP_5="--use_expert_paral"
+fi
 
 if  [[ "$model_name_lower" == *"deepseek"* ]]; then
     EXTRA_FLAGS_STEP_2+="--block-quant --expert-parallel "
@@ -239,6 +244,7 @@ if $SKIP_STEP_1; then
 else
     echo ""
     echo "1/4 Preparing calibration dataset"
+    echo "python3 step-1-prepare-calibration-dataset.py -m $MODEL_PATH -d $DATASET_PATH_OR_NAME -o $MODEL_NAME $EXTRA_FLAGS_STEP_1 "
     python3 step-1-prepare-calibration-dataset.py -m $MODEL_PATH -d $DATASET_PATH_OR_NAME -o $MODEL_NAME $EXTRA_FLAGS_STEP_1 || (echo "Error in step 1" && exit 1)
     echo "Step 1/4 done"
 fi
@@ -248,12 +254,14 @@ echo "2/4 Measuring scales"
 if $MULTI_NODE_SETUP; then
     env $EXTRA_ENVS_STEP_2 python3 step-2-measure-scales.py -m $MODEL_PATH --tensor-parallel-size $TP_SIZE -d $MODEL_NAME-calibration-dataset.pkl --batch-size $BATCH_SIZE --distributed-executor-backend ray  $EXTRA_FLAGS_STEP_2 || (echo "Error in step 2" && exit 1)
 else
+    echo "env $EXTRA_ENVS_STEP_2 python3 step-2-measure-scales.py -m $MODEL_PATH --tensor-parallel-size $TP_SIZE -d $MODEL_NAME-calibration-dataset.pkl --batch-size $BATCH_SIZE $EXTRA_FLAGS_STEP_2"
     env $EXTRA_ENVS_STEP_2 python3 step-2-measure-scales.py -m $MODEL_PATH --tensor-parallel-size $TP_SIZE -d $MODEL_NAME-calibration-dataset.pkl --batch-size $BATCH_SIZE $EXTRA_FLAGS_STEP_2 || (echo "Error in step 2" && exit 1)
 fi
 echo "Step 2/4 done"
 
 echo ""
 echo "3/4 Postprocessing scales"
+echo "python3 step-3-postprocess-measure.py -m $FP8_DIR/$MODEL_NAME/$DEVICE_TYPE/ -o inc_tmp/$MODEL_NAME/$DEVICE_TYPE/  $EXTRA_FLAGS_STEP_3"
 python3 step-3-postprocess-measure.py -m $FP8_DIR/$MODEL_NAME/$DEVICE_TYPE/ -o inc_tmp/$MODEL_NAME/$DEVICE_TYPE/  $EXTRA_FLAGS_STEP_3 || (echo "Error in step 3" && exit 1)
 cp inc_tmp/$MODEL_NAME/$DEVICE_TYPE/* $FP8_DIR/$MODEL_NAME/$DEVICE_TYPE/
 echo "Step 3/4 done"
@@ -271,6 +279,7 @@ echo "4/4 Quantize scales"
 if $MULTI_NODE_SETUP; then
     env $EXTRA_ENVS_STEP_4 python3 step-4-quantize-scales.py --model $MODEL_PATH --tensor-parallel-size $TP_SIZE --distributed-executor-backend ray $EXTRA_FLAGS_STEP_4 || (echo "Error in step 4" && exit 1)
 else
+    echo "env $EXTRA_ENVS_STEP_4 python3 step-4-quantize-scales.py --model $MODEL_PATH --tensor-parallel-size $TP_SIZE $EXTRA_FLAGS_STEP_4"
     env $EXTRA_ENVS_STEP_4 python3 step-4-quantize-scales.py --model $MODEL_PATH --tensor-parallel-size $TP_SIZE $EXTRA_FLAGS_STEP_4 || (echo "Error in step 4" && exit 1)
 fi
 
@@ -278,7 +287,8 @@ if [[ -n $RANK ]]; then
     echo ""
     echo "5/5 Unify scales"
     QUANT_DIR=$FP8_DIR/$MODEL_NAME/$DEVICE_TYPE/
-    python3 step-5-unify_measurements.py -r $RANK -m $QUANT_DIR -o $QUANT_DIR $USE_EP || (echo "Error in step 5" && exit 1)
+    echo "python3 step-5-unify_measurements.py -r $RANK -m $QUANT_DIR -o $QUANT_DIR $EP_FLAG_STEP_5"
+    python3 step-5-unify_measurements.py -r $RANK -m $QUANT_DIR -o $QUANT_DIR $EP_FLAG_STEP_5 || (echo "Error in step 5" && exit 1)
     echo "Step 5/5 done"
 fi
 cleanup_tmp
